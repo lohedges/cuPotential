@@ -683,6 +683,9 @@ private:
 
     // Special pairs
     bool exceptionsUsePeriodicBoundaryConditions = false;
+    // Particles and exceptions changed since the last updateParametersInContext(), as in OpenMM.
+    mutable int numContexts = 0, firstChangedParticle = 0, lastChangedParticle = -1,
+                firstChangedException = 0, lastChangedException = -1;
     struct ExceptionInfo {
         int particle1, particle2;
         double chargeProd, sigma, epsilon;

@@ -50,7 +50,8 @@ public:
     void initialize(const OpenMM::System& system, const NonbondedForce& force,
                     float boxSafetyFactor);
     double execute(OpenMM::ContextImpl& context, bool includeForces, bool includeEnergy);
-    void copyParametersToContext(OpenMM::ContextImpl& context, const NonbondedForce& force);
+    void copyParametersToContext(OpenMM::ContextImpl& context, const NonbondedForce& force,
+                                 int firstParticle, int lastParticle, int firstException, int lastException);
 
     /**
      * Called by ReorderListener after OpenMM permutes atom order: re-permutes and
@@ -99,6 +100,9 @@ private:
         std::shared_ptr<const BuiltinParameterDefinition> definition;
         std::vector<double> particles, exceptions, values;
         double tailCoefficient = 0.0;
+        // Set by a ranged update: only these rows differ from the active packed records.
+        bool ranged = false;
+        int firstParticle = 0, lastParticle = -1, firstException = 0, lastException = -1;
     };
     enum ParameterChange : unsigned {
         ParticlesChanged = 1u << 0,
@@ -145,6 +149,8 @@ private:
     void applyAtomReorderImpl();
     void validateExclusionTopology();
     void copyBuiltinParameters(OpenMM::ContextImpl& context, const NonbondedForce& force);
+    bool copyChangedBuiltinParameters(OpenMM::ContextImpl& context, const NonbondedForce& force,
+                                      int firstParticle, int lastParticle, int firstException, int lastException);
 
     // ======================= state =======================
     OpenMM::ComputeContext& cc_;

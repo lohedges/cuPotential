@@ -282,7 +282,8 @@ std::map<std::string, double> NonbondedForceImpl::getDefaultParameters() {
     return result;
 }
 
-void NonbondedForceImpl::updateParametersInContext(OpenMM::ContextImpl& context) {
+void NonbondedForceImpl::updateParametersInContext(OpenMM::ContextImpl& context, int firstParticle,
+                                                   int lastParticle, int firstException, int lastException) {
     if (owner.getPairMode() == NonbondedForce::Custom)
         validateCustomDefinition(owner.getCustomDefinition());
     if (owner.getPairMode() == NonbondedForce::Standard && owner.hasCutoffExpression())
@@ -290,7 +291,8 @@ void NonbondedForceImpl::updateParametersInContext(OpenMM::ContextImpl& context)
     for (int i = 0; i < owner.getNumExpressionTailCorrections(); ++i)
         validateTailDefinition(owner, owner.getExpressionTailCorrectionDefinition(i));
     validateParameterOffsets(owner);
-    kernel.getAs<CalcNonbondedForceKernel>().copyParametersToContext(context, owner);
+    kernel.getAs<CalcNonbondedForceKernel>().copyParametersToContext(context, owner, firstParticle, lastParticle,
+                                                                     firstException, lastException);
     context.systemChanged();
 }
 

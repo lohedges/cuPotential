@@ -134,11 +134,23 @@ void NonbondedForce::setParticleParameters(int index, double charge,
     particles[index].charge  = charge;
     particles[index].sigma   = sigma;
     particles[index].epsilon = epsilon;
+    if (numContexts > 0) {
+        firstChangedParticle = std::min(index, firstChangedParticle);
+        lastChangedParticle = std::max(index, lastChangedParticle);
+    }
 }
 
 void NonbondedForce::updateParametersInContext(OpenMM::Context& context) {
     dynamic_cast<NonbondedForceImpl&>(getImplInContext(context))
-        .updateParametersInContext(getContextImpl(context));
+        .updateParametersInContext(getContextImpl(context), firstChangedParticle, lastChangedParticle,
+                                   firstChangedException, lastChangedException);
+    if (numContexts == 1) {
+        // The only Context using this force is now up to date.
+        firstChangedParticle = (int)particles.size();
+        lastChangedParticle = -1;
+        firstChangedException = (int)exceptions.size();
+        lastChangedException = -1;
+    }
 }
 
 void NonbondedForce::setLJCombiningRule(LJCombiningRule rule) {
@@ -186,9 +198,20 @@ void NonbondedForce::setExceptionParameters(int index, int particle1, int partic
     e.chargeProd = chargeProd;
     e.sigma = sigma;
     e.epsilon = epsilon;
+    if (numContexts > 0) {
+        firstChangedException = std::min(index, firstChangedException);
+        lastChangedException = std::max(index, lastChangedException);
+    }
 }
 
 OpenMM::ForceImpl* NonbondedForce::createImpl() const {
+    if (numContexts == 0) {
+        firstChangedParticle = (int)particles.size();
+        lastChangedParticle = -1;
+        firstChangedException = (int)exceptions.size();
+        lastChangedException = -1;
+    }
+    numContexts++;
     return new NonbondedForceImpl(*this);
 }
 

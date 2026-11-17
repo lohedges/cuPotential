@@ -246,14 +246,14 @@ public:
         }
         double* output=nullptr;
         if (energy) {
-            if (cu.getUseMixedPrecision()) output=reinterpret_cast<double*>(cu.getEnergyBuffer().getDevicePointer());
+            if (cu.getUseMixedPrecision()) output=reinterpret_cast<double*>(cu.unwrap(cu.getEnergyBuffer()).getDevicePointer());
             else { output=singleEnergy; checked(cudaMemsetAsync(output,0,sizeof(double),stream)); }
         }
-        checked(cupo_tuples_execute(plan,reinterpret_cast<void*>(cu.getPosq().getDevicePointer()),deviceBox,
-            forces ? reinterpret_cast<int64_t*>(cu.getLongForceBuffer().getDevicePointer()) : nullptr,
+        checked(cupo_tuples_execute(plan,reinterpret_cast<void*>(cu.unwrap(cu.getPosq()).getDevicePointer()),deviceBox,
+            forces ? reinterpret_cast<int64_t*>(cu.unwrap(cu.getLongForceBuffer()).getDevicePointer()) : nullptr,
             cu.getPaddedNumAtoms(),output,uint32_t(groups),stream));
         if (energy && !cu.getUseMixedPrecision()) {
-            addSingleEnergy<<<1,1,0,stream>>>(singleEnergy,reinterpret_cast<float*>(cu.getEnergyBuffer().getDevicePointer()));
+            addSingleEnergy<<<1,1,0,stream>>>(singleEnergy,reinterpret_cast<float*>(cu.unwrap(cu.getEnergyBuffer()).getDevicePointer()));
             checked(cudaGetLastError());
         }
         return 0;

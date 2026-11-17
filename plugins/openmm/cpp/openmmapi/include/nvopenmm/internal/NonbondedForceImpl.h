@@ -38,7 +38,8 @@ public:
 
     std::vector<std::string> getKernelNames();
 
-    void updateParametersInContext(OpenMM::ContextImpl& context);
+    void updateParametersInContext(OpenMM::ContextImpl& context, int firstParticle, int lastParticle,
+                                   int firstException, int lastException);
 
     /** Validate the supported cutoff expression contract before copying or use. */
     static void validateCustomDefinition(const OpenMM::CustomNonbondedForce& force);

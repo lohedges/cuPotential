@@ -290,8 +290,11 @@ CudaCalcNonbondedForce::~CudaCalcNonbondedForce()
 // still belongs to the Standard pair descriptor, not to this update path.
 vector<float> CudaCalcNonbondedForce::buildCupoParams(const BuiltinParameters& parameters) const
 {
-    vector<float> result(parameters.particles.size());
-    for (size_t i = 0; i < parameters.particles.size(); ++i) {
+    const bool ranged = parameters.ranged && sysorder_params_.size() == parameters.particles.size();
+    vector<float> result = ranged ? sysorder_params_ : vector<float>(parameters.particles.size());
+    const size_t first = ranged ? 3*static_cast<size_t>(parameters.firstParticle) : 0;
+    const size_t end = ranged ? 3*static_cast<size_t>(parameters.lastParticle+1) : parameters.particles.size();
+    for (size_t i = first; i < end; ++i) {
         const double value = parameters.particles[i];
         result[i] = static_cast<float>(value);
         if (!std::isfinite(value) || !std::isfinite(result[i]) ||
@@ -329,7 +332,10 @@ vector<cupo_tuples_pair_parameters> CudaCalcNonbondedForce::buildBondedPairParam
                                               "must remain finite in FP32");
         result[k] = {coulomb, sigma, epsilon};
     };
-    if (sparse) {
+    if (parameters.ranged && exception_parameters_.size() == static_cast<size_t>(n_exclusion_pairs_)) {
+        result = exception_parameters_;
+        for (int k = parameters.firstException; k <= parameters.lastException; ++k) set(k);
+    } else if (sparse) {
         for (const auto& offset : parameters.definition->exceptionOffsets) set(offset.index);
     } else {
         for (int k=0; k<n_exclusion_pairs_; ++k) set(k);
@@ -1254,9 +1260,9 @@ double CudaCalcNonbondedForce::execute(OpenMM::ContextImpl& context,
     if (bonded_pairs_) bonded_pairs_->prepare();
 
     const auto* posq = reinterpret_cast<const float4*>(
-        static_cast<uintptr_t>(cu.getPosq().getDevicePointer()));
+        static_cast<uintptr_t>(cu.unwrap(cu.getPosq()).getDevicePointer()));
     auto* force = reinterpret_cast<unsigned long long*>(
-        static_cast<uintptr_t>(cu.getForce().getDevicePointer()));
+        static_cast<uintptr_t>(cu.unwrap(cu.getForce()).getDevicePointer()));
 
     runStep(posq, force, cu.getNumAtoms(), cu.getPaddedNumAtoms(),
             box, includeEnergy, includeForces, stream);
@@ -1301,7 +1307,9 @@ double CudaCalcNonbondedForce::finishPendingEnergy()
 
 
 void CudaCalcNonbondedForce::copyParametersToContext(OpenMM::ContextImpl& context,
-                                                    const NonbondedForce& force)
+                                                    const NonbondedForce& force,
+                                                    int firstParticle, int lastParticle,
+                                                    int firstException, int lastException)
 {
     model_->validateUpdate(force);
     if (model_->hasBuiltinParameters() &&
@@ -1323,11 +1331,90 @@ void CudaCalcNonbondedForce::copyParametersToContext(OpenMM::ContextImpl& contex
             : force.getExpressionTailCorrectionDefinition(int(i)-int(implicit_expression_tail_));
         next_tails.push_back(expression_tails_[i]->prepareUpdate(definition, context.getOwner()));
     }
-    if (model_->hasBuiltinParameters())
+    if (model_->hasBuiltinParameters() &&
+            !copyChangedBuiltinParameters(context, force, firstParticle, lastParticle,
+                                          firstException, lastException))
         copyBuiltinParameters(context, force);
     if (custom_parameters_)
         custom_parameters_->copyParametersToContext(context, force);
     expression_tails_.swap(next_tails);
+}
+
+// Update only the particles and exceptions in the changed ranges. Returns false,
+// without changing anything, when the full update is needed instead.
+bool CudaCalcNonbondedForce::copyChangedBuiltinParameters(OpenMM::ContextImpl& context,
+                                                        const NonbondedForce& force,
+                                                        int firstParticle, int lastParticle,
+                                                        int firstException, int lastException)
+{
+    const auto previous = builtin_parameters_.definition;
+    if (!previous || force.getNumParticles() != natoms_ || force.getNumExceptions() != n_exclusion_pairs_)
+        return false;
+    // Offsets may refer to any particle or exception, so they use the full update.
+    if (force.getNumParticleParameterOffsets() > 0 || force.getNumExceptionParameterOffsets() > 0 ||
+            !previous->particleOffsets.empty() || !previous->exceptionOffsets.empty())
+        return false;
+    if (force.getNumGlobalParameters() != static_cast<int>(previous->globalNames.size()))
+        return false;
+    for (int i = 0; i < force.getNumGlobalParameters(); ++i)
+        if (force.getGlobalParameterName(i) != previous->globalNames[i])
+            return false;
+    const auto tail = force.getDispersionCorrectionInteraction();
+    const auto& previousTail = previous->tailReference;
+    if (tail.tail != previousTail.tail || tail.combiningRule != previousTail.combiningRule ||
+            tail.useSwitching != previousTail.useSwitching ||
+            (tail.useSwitching && tail.switchingDistance != previousTail.switchingDistance) ||
+            force.getDispersionCorrectionFollowsParameters() != previous->tailFollowsParameters ||
+            (previous->tail != CutoffInteraction::NoTail && !previous->tailFollowsParameters))
+        return false;
+
+    firstParticle = std::max(firstParticle, 0);
+    lastParticle = std::min(lastParticle, natoms_ - 1);
+    firstException = std::max(firstException, 0);
+    lastException = std::min(lastException, n_exclusion_pairs_ - 1);
+    const bool particles = firstParticle <= lastParticle;
+    const bool exceptions = firstException <= lastException;
+
+    BuiltinParameters next;
+    next.values = builtin_parameters_.values;
+    next.particles = builtin_parameters_.particles;
+    next.exceptions = builtin_parameters_.exceptions;
+    if (particles || exceptions) {
+        auto definition = std::make_shared<BuiltinParameterDefinition>(*previous);
+        for (int i = firstParticle; i <= lastParticle; ++i)
+            force.getParticleParameters(i, definition->baseParticles[3*i],
+                definition->baseParticles[3*i+1], definition->baseParticles[3*i+2]);
+        for (int k = firstException; k <= lastException; ++k) {
+            int first, second;
+            force.getExceptionParameters(k, first, second, definition->baseExceptions[3*k],
+                definition->baseExceptions[3*k+1], definition->baseExceptions[3*k+2]);
+            if (first != sysorder_exclusion_pairs_[2*k] || second != sysorder_exclusion_pairs_[2*k+1])
+                throw OpenMM::OpenMMException(
+                    "updateParametersInContext: exception particles changed; reinitialize the Context");
+        }
+        // Without offsets, the effective parameters are the base parameters.
+        if (particles)
+            std::copy(definition->baseParticles.begin() + 3*firstParticle,
+                      definition->baseParticles.begin() + 3*(lastParticle+1),
+                      next.particles.begin() + 3*firstParticle);
+        if (exceptions)
+            std::copy(definition->baseExceptions.begin() + 3*firstException,
+                      definition->baseExceptions.begin() + 3*(lastException+1),
+                      next.exceptions.begin() + 3*firstException);
+        next.definition = std::move(definition);
+    }
+    else {
+        next.definition = previous;
+    }
+    readOffsetValues(next, context);
+    next.ranged = true;
+    next.firstParticle = firstParticle;
+    next.lastParticle = lastParticle;
+    next.firstException = firstException;
+    next.lastException = lastException;
+    const unsigned changed = (particles ? ParticlesChanged : 0u) | (exceptions ? ExceptionsChanged : 0u);
+    pushBuiltinParameters(std::move(next), changed, particles || exceptions);
+    return true;
 }
 
 void CudaCalcNonbondedForce::copyBuiltinParameters(OpenMM::ContextImpl& context,
